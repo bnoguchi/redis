@@ -78,8 +78,6 @@ robj *lookupKeyByPattern(redisDb *db, robj *pattern, robj *subst) {
         initStaticStringObject(fieldobj,((char*)&fieldname)+(sizeof(struct sdshdr)));
         o = hashTypeGet(o, &fieldobj);
     } else {
-        if (o->type != REDIS_STRING) return NULL;
-
         /* Every object that this function returns needs to have its refcount
          * increased. sortCommand decreases it again. */
         incrRefCount(o);
@@ -132,6 +130,8 @@ int sortCompare(const void *s1, const void *s2) {
 void sortCommand(redisClient *c) {
     list *operations;
     unsigned int outputlen = 0;
+    unsigned long hashlen = 0;
+    robj *lenobj = createObject(REDIS_STRING, NULL);
     int desc = 0, alpha = 0;
     int limit_start = 0, limit_count = -1, start, end;
     int j, dontsort = 0, vectorlen;
@@ -319,8 +319,32 @@ void sortCommand(redisClient *c) {
                     if (!val) {
                         addReply(c,shared.nullbulk);
                     } else {
-                        addReplyBulk(c,val);
-                        decrRefCount(val);
+                        if (val->type != REDIS_HASH) {
+                            addReplyBulk(c,val);
+                            decrRefCount(val);
+                        } else {
+                            hashlen = 0;
+                            lenobj = createObject(REDIS_STRING, NULL);
+                            addReply(c, lenobj);
+                            decrRefCount(lenobj);
+                            hashTypeIterator *hi;
+                            robj *hashobj;
+                            hi = hashTypeInitIterator(val);
+                            while (hashTypeNext(hi) != REDIS_ERR) {
+                                // Deal with key
+                                hashobj = hashTypeCurrent(hi,REDIS_HASH_KEY);
+                                addReplyBulk(c,hashobj);
+                                decrRefCount(hashobj);
+                                hashlen++;
+                                // Deal with value
+                                hashobj = hashTypeCurrent(hi, REDIS_HASH_VALUE);
+                                addReplyBulk(c, hashobj);
+                                decrRefCount(hashobj);
+                                hashlen++;
+                            }
+                            hashTypeReleaseIterator(hi);
+                            lenobj->ptr = sdscatprintf(sdsempty(), "*%lu\r\n", hashlen);
+                        }
                     }
                 } else {
                     redisAssert(sop->type == REDIS_SORT_GET); /* always fails */
